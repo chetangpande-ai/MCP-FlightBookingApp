@@ -1,14 +1,38 @@
 """MCP server with demo travel tools and reference information."""
 
 import json
+import sys
+from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
+from mcp.server.auth.middleware.auth_context import get_access_token
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from auth.tokens import LocalJWTVerifier
 from mcp.server import MCPServer
+from mcp.server.auth.settings import AuthSettings
+from settings import settings
 
 
-server = MCPServer("Business Travel MCP Server")
+server = MCPServer(
+    "Business Travel MCP Server",
+    token_verifier=LocalJWTVerifier(
+        secret=settings.token_secret,
+        expected_resource_url=settings.travel_http_url,
+        required_scopes=["travel:read"],
+    ),
+    auth=AuthSettings(
+        issuer_url=f"http://{settings.http_host}:{settings.travel_http_port}",
+        resource_server_url=settings.travel_http_url,
+        required_scopes=["travel:read"],
+        validate_token_resource=True,
+    ),
+)
 
 
 # TOOLS = DO
@@ -38,7 +62,9 @@ def get_live_weather(city: str) -> dict[str, str | float | int]:
         geocoding_url = "https://geocoding-api.open-meteo.com/v1/search?" + urlencode(
             {"name": city, "count": 1, "language": "en", "format": "json"}
         )
-        with urlopen(geocoding_url, timeout=10) as response:
+        with urlopen(
+            geocoding_url, timeout=settings.weather_timeout_seconds
+        ) as response:
             locations = json.loads(response.read().decode("utf-8")).get("results", [])
 
         if not locations:
@@ -53,7 +79,9 @@ def get_live_weather(city: str) -> dict[str, str | float | int]:
                 "timezone": "auto",
             }
         )
-        with urlopen(forecast_url, timeout=10) as response:
+        with urlopen(
+            forecast_url, timeout=settings.weather_timeout_seconds
+        ) as response:
             current = json.loads(response.read().decode("utf-8"))["current"]
 
         return {
@@ -69,6 +97,10 @@ def get_live_weather(city: str) -> dict[str, str | float | int]:
 @server.tool()
 def book_hotel(city: str, nights: int, hotel_class: str = "4-star") -> dict[str, str | int]:
     """Create a demo hotel booking confirmation. This tool has a side effect."""
+    access_token = get_access_token()
+    if access_token is not None and "travel:book" not in access_token.scopes:
+        raise PermissionError("Hotel booking requires the travel:book scope.")
+
     return {
         "confirmation": "DEMO-HOTEL-001",
         "city": city,

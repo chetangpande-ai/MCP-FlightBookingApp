@@ -178,3 +178,38 @@ The current code is a learning demo. It uses sample flights, sample work tasks, 
 3. Add a fourth MCP server for calendar availability and include it in the host.
 4. Add a fifth demo policy and test which query ranks it highest.
 5. Replace the in-memory task list with a persistent store or an issue-tracker integration.
+
+## Local configuration (Stage 1)
+
+Copy `.env.example` to `.env` and override values as needed. `settings.py` resolves
+the MCP host, per-server URLs and ports, gateway port, Groq model, HTTP and weather
+timeouts, local SQLite path, token secret, and log level from environment variables.
+HTTP URLs default from `MCP_HOST` and the configured server ports; set
+`TRAVEL_HTTP_URL`, `POLICY_HTTP_URL`, or `WORK_HTTP_URL` only when an explicit
+endpoint override is needed.
+The current HTTP travel launcher and client use the shared settings; STDIO server
+paths and launch behavior remain unchanged. `TOKEN_SECRET` in the example is only
+a placeholder for local development and must not be used as a production secret.
+
+The default HTTP travel endpoint remains `http://127.0.0.1:8001/mcp`. Logs are
+written to stderr so they do not interfere with MCP's STDIO transport. Run the
+configuration tests with `python -m pytest`.
+
+## Local HTTP authentication (Stage 2)
+
+The Streamable HTTP travel server requires a signed, short-lived bearer token
+with the `travel:read` scope and an audience matching its configured MCP URL.
+`app_http.py` mints and sends a travel-read-only development token; it does not
+forward an incoming token to another service. The booking tool also requires
+`travel:book` on authenticated HTTP requests, and the local token CLI deliberately
+does not offer that scope. The STDIO server behavior remains available to the host
+and existing STDIO checks.
+
+To issue a local non-booking token for a server, set `TOKEN_SECRET` in `.env` and
+run `python scripts\issue_token.py --server-url http://127.0.0.1:8001/mcp`.
+The example secret is for local development only. Do not reuse it outside the
+laptop demo or expose the HTTP server beyond loopback.
+
+Authentication tests, including missing/bad/expired tokens, wrong audience,
+missing scope, a valid token, and booking scope enforcement, run with
+`python -m pytest`.

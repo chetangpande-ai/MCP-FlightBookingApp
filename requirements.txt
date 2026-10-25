@@ -2,3 +2,5 @@ mcp[cli]>=2.0
 langchain[mcp]>=1.4.0
 langchain-groq
 python-dotenv
+PyJWT==2.15.1
+pytest==9.1.1

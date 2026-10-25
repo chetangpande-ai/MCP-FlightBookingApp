@@ -2,14 +2,12 @@
 
 import asyncio
 import json
-import os
 import re
 import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
 from groq import APIStatusError
 from langchain.agents import create_agent
 from langchain_core.tools import StructuredTool
@@ -18,9 +16,10 @@ from mcp import Client, StdioServerParameters
 from mcp.types import TextContent, TextResourceContents
 from pydantic import Field, create_model
 
+from logging_setup import configure_logging
+from settings import settings
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-load_dotenv(PROJECT_ROOT / ".env")
 
 SERVER_FILES = {
     "travel": PROJECT_ROOT / "servers" / "travel_server.py",
@@ -118,7 +117,7 @@ def print_message_flow(messages: list[Any]) -> str:
 
 async def run_trip(destination: str, days: int, origin: str) -> None:
     """Read MCP context, run the agent, then ask before booking a hotel."""
-    if not os.getenv("GROQ_API_KEY"):
+    if not settings.groq_api_key:
         raise SystemExit("Set GROQ_API_KEY in your .env file before running the agent.")
 
     async with Client(server_parameters(SERVER_FILES["travel"])) as travel_client:
@@ -194,8 +193,7 @@ Rules:
 - Explain important findings and keep the plan concise.
 """
 
-        model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
-        model = ChatGroq(model=model_name, temperature=0)
+        model = ChatGroq(model=settings.groq_model, temperature=0)
         agent = create_agent(model, agent_tools, system_prompt=system_prompt)
         request = (
             f"Plan a {days}-day business trip from {origin} to {destination}. "
@@ -235,6 +233,7 @@ Rules:
 
 
 def main() -> None:
+    configure_logging()
     destination = input("Destination [Dubai]: ").strip() or "Dubai"
     days_text = input("Trip length in days [5]: ").strip() or "5"
     origin = input("Origin [Bangalore]: ").strip() or "Bangalore"
