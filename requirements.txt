@@ -1,4 +1,4 @@
 mcp[cli]>=2.0
 langchain[mcp]>=1.4.0
-langchain-openai
+langchain-groq
 python-dotenv
