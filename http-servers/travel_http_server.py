@@ -1,4 +1,4 @@
-"""Run the travel MCP server over Streamable HTTP on localhost."""
+"""Run the existing travel MCP server over Streamable HTTP."""
 
 import sys
 from pathlib import Path

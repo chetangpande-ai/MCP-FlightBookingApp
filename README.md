@@ -89,16 +89,16 @@ The model defaults to `openai/gpt-oss-20b`, hosted by Groq. Set `GROQ_MODEL` in 
 Start the server in one PowerShell terminal:
 
 ```powershell
-python advanced\travel_http_server.py
+python http-servers\travel_http_server.py
 ```
 
 In a second terminal, from the project root, run:
 
 ```powershell
-python advanced\travel_http_client.py
+python app_http.py
 ```
 
-The client connects to `http://127.0.0.1:8001/mcp`, lists the travel tools, and calls the sample flight search.
+The HTTP launcher imports the same `server` instance from `servers/travel_server.py`; it does not duplicate the tool/resource/prompt definitions. The client connects to `http://127.0.0.1:8001/mcp`, lists tools, calls flight search, reads travel preferences and the Dubai guide, and requests the trip-planning prompt. The local example uses HTTP on loopback. Use a TLS-terminating proxy or configure a trusted HTTPS endpoint before exposing it beyond the machine.
 
 | Detail | STDIO | Streamable HTTP |
 | --- | --- | --- |
@@ -121,9 +121,9 @@ The client connects to `http://127.0.0.1:8001/mcp`, lists the travel tools, and 
     work_server.py
   tests/
     check_travel_server.py
-  advanced/
+  http-servers/
     travel_http_server.py
-    travel_http_client.py
+  app_http.py
 ```
 
 ## Architecture Flow
