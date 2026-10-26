@@ -32,6 +32,22 @@ def _positive_float(env: Mapping[str, str], name: str, default: float) -> float:
     return value
 
 
+def _bounded_int(
+    env: Mapping[str, str],
+    name: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        value = int(env.get(name, str(default)))
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer.") from error
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}.")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     """Resolved settings, with environment variables overriding local defaults."""
@@ -49,6 +65,9 @@ class Settings:
     groq_model: str
     http_timeout_seconds: float
     weather_timeout_seconds: float
+    approval_ttl_minutes: int
+    policy_search_mode: str
+    policy_cache_path: Path
     database_path: Path
     log_level: str
 
@@ -65,6 +84,14 @@ class Settings:
         ).expanduser()
         if not database_path.is_absolute():
             database_path = PROJECT_ROOT / database_path
+        policy_cache_path = Path(
+            values.get("POLICY_CACHE_PATH", "data/policy_vectors.json")
+        ).expanduser()
+        if not policy_cache_path.is_absolute():
+            policy_cache_path = PROJECT_ROOT / policy_cache_path
+        policy_search_mode = values.get("POLICY_SEARCH_MODE", "tfidf").strip().lower()
+        if policy_search_mode not in {"tfidf", "offline"}:
+            raise ValueError("POLICY_SEARCH_MODE must be 'tfidf' or 'offline'.")
 
         return cls(
             http_host=host,
@@ -93,6 +120,11 @@ class Settings:
             weather_timeout_seconds=_positive_float(
                 values, "WEATHER_TIMEOUT_SECONDS", 10.0
             ),
+            approval_ttl_minutes=_bounded_int(
+                values, "APPROVAL_TTL_MINUTES", 5, 1, 60
+            ),
+            policy_search_mode=policy_search_mode,
+            policy_cache_path=policy_cache_path,
             database_path=database_path,
             log_level=values.get("LOG_LEVEL", "INFO").upper(),
         )

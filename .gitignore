@@ -7,6 +7,8 @@ venv/
 
 __pycache__/
 *.py[cod]
+data/*.sqlite3
+data/policy_vectors.json
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

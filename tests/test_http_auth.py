@@ -12,7 +12,17 @@ from settings import settings
 
 
 @pytest.fixture
-def http_client() -> Iterator[TestClient]:
+def http_client(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[TestClient]:
+    from servers import idempotency
+
+    monkeypatch.setattr(
+        idempotency,
+        "DEFAULT_DATABASE_PATH",
+        tmp_path / "http-auth-idempotency.sqlite3",
+    )
     app = server.streamable_http_app(stateless_http=True, json_response=True)
     with TestClient(
         app,
@@ -49,7 +59,11 @@ def _call_hotel(client: TestClient, token: str) -> dict:
             "method": "tools/call",
             "params": {
                 "name": "book_hotel",
-                "arguments": {"city": "Dubai", "nights": 2},
+                "arguments": {
+                    "city": "Dubai",
+                    "nights": 2,
+                    "idempotency_key": "http-auth-booking-test",
+                },
             },
         },
     )

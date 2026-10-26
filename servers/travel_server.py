@@ -1,9 +1,11 @@
 """MCP server with demo travel tools and reference information."""
 
 import json
+import socket
 import sys
 from pathlib import Path
-from urllib.error import URLError
+from time import sleep
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -16,7 +18,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from auth.tokens import LocalJWTVerifier
 from mcp.server import MCPServer
 from mcp.server.auth.settings import AuthSettings
+from servers.idempotency import execute_idempotent
 from settings import settings
+
+
+MAX_TEXT_LENGTH = 200
+MAX_WEATHER_RESPONSE_BYTES = 64 * 1024
+WEATHER_MAX_ATTEMPTS = 3
+WEATHER_BASE_BACKOFF_SECONDS = 0.25
+HOTEL_CLASSES = frozenset({"3-star", "4-star", "5-star"})
 
 
 server = MCPServer(
@@ -35,10 +45,65 @@ server = MCPServer(
 )
 
 
+def _validate_text(name: str, value: str, *, max_length: int = MAX_TEXT_LENGTH) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be text.")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{name} must not be empty.")
+    if len(normalized) > max_length:
+        raise ValueError(f"{name} must be at most {max_length} characters.")
+    return normalized
+
+
+class _WeatherRequestError(Exception):
+    def __init__(self, message: str, *, retryable: bool) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _get_weather_json(url: str) -> dict:
+    for attempt in range(WEATHER_MAX_ATTEMPTS):
+        try:
+            with urlopen(url, timeout=settings.weather_timeout_seconds) as response:
+                payload = response.read(MAX_WEATHER_RESPONSE_BYTES + 1)
+            if len(payload) > MAX_WEATHER_RESPONSE_BYTES:
+                raise _WeatherRequestError(
+                    "Weather service response exceeded the size limit.",
+                    retryable=False,
+                )
+            parsed = json.loads(payload.decode("utf-8"))
+            if not isinstance(parsed, dict):
+                raise _WeatherRequestError(
+                    "Weather service returned an invalid response.",
+                    retryable=False,
+                )
+            return parsed
+        except HTTPError as error:
+            retryable = error.code in {408, 429} or 500 <= error.code <= 599
+            if not retryable or attempt == WEATHER_MAX_ATTEMPTS - 1:
+                raise _WeatherRequestError(
+                    f"Weather service returned HTTP {error.code}.",
+                    retryable=retryable,
+                ) from error
+        except (URLError, TimeoutError, socket.timeout) as error:
+            if attempt == WEATHER_MAX_ATTEMPTS - 1:
+                raise _WeatherRequestError(
+                    "Weather service request failed after retries.",
+                    retryable=True,
+                ) from error
+
+        sleep(WEATHER_BASE_BACKOFF_SECONDS * (2**attempt))
+
+    raise RuntimeError("Weather retry loop exited unexpectedly.")
+
+
 # TOOLS = DO
 @server.tool()
 def search_flights(origin: str, destination: str) -> list[dict[str, str | int]]:
     """Return two sample flights for the requested route."""
+    origin = _validate_text("origin", origin, max_length=100)
+    destination = _validate_text("destination", destination, max_length=100)
     return [
         {
             "airline": "Air India",
@@ -56,19 +121,33 @@ def search_flights(origin: str, destination: str) -> list[dict[str, str | int]]:
 
 
 @server.tool()
-def get_live_weather(city: str) -> dict[str, str | float | int]:
+def get_live_weather(
+    city: str,
+) -> dict[str, str | float | int | bool]:
     """Look up the current weather using the free Open-Meteo APIs."""
+    try:
+        city = _validate_text("city", city, max_length=100)
+    except ValueError as error:
+        return {"ok": False, "error": str(error), "retryable": False}
+
     try:
         geocoding_url = "https://geocoding-api.open-meteo.com/v1/search?" + urlencode(
             {"name": city, "count": 1, "language": "en", "format": "json"}
         )
-        with urlopen(
-            geocoding_url, timeout=settings.weather_timeout_seconds
-        ) as response:
-            locations = json.loads(response.read().decode("utf-8")).get("results", [])
+        locations = _get_weather_json(geocoding_url).get("results", [])
 
         if not locations:
-            return {"error": f"No location found for {city}."}
+            return {
+                "ok": False,
+                "error": f"No location found for {city}.",
+                "retryable": False,
+            }
+        if not isinstance(locations, list) or not isinstance(locations[0], dict):
+            return {
+                "ok": False,
+                "error": "Weather service returned an invalid location.",
+                "retryable": False,
+            }
 
         location = locations[0]
         forecast_url = "https://api.open-meteo.com/v1/forecast?" + urlencode(
@@ -79,35 +158,70 @@ def get_live_weather(city: str) -> dict[str, str | float | int]:
                 "timezone": "auto",
             }
         )
-        with urlopen(
-            forecast_url, timeout=settings.weather_timeout_seconds
-        ) as response:
-            current = json.loads(response.read().decode("utf-8"))["current"]
+        current = _get_weather_json(forecast_url)["current"]
+        if not isinstance(current, dict):
+            return {
+                "ok": False,
+                "error": "Weather service returned an invalid forecast.",
+                "retryable": False,
+            }
 
         return {
+            "ok": True,
             "city": location["name"],
             "temperature_c": current["temperature_2m"],
             "humidity_percent": current["relative_humidity_2m"],
             "wind_speed_kmh": current["wind_speed_10m"],
         }
-    except (URLError, TimeoutError, KeyError, json.JSONDecodeError) as error:
-        return {"error": f"Weather lookup failed for {city}: {error}"}
+    except _WeatherRequestError as error:
+        return {
+            "ok": False,
+            "error": str(error),
+            "retryable": error.retryable,
+        }
+    except (KeyError, json.JSONDecodeError, UnicodeDecodeError, TypeError) as error:
+        return {
+            "ok": False,
+            "error": f"Weather service returned invalid data ({type(error).__name__}).",
+            "retryable": False,
+        }
 
 
 @server.tool()
-def book_hotel(city: str, nights: int, hotel_class: str = "4-star") -> dict[str, str | int]:
+def book_hotel(
+    city: str,
+    nights: int,
+    idempotency_key: str,
+    hotel_class: str = "4-star",
+) -> dict[str, str | int]:
     """Create a demo hotel booking confirmation. This tool has a side effect."""
     access_token = get_access_token()
-    if access_token is not None and "travel:book" not in access_token.scopes:
+    if access_token is None or "travel:book" not in access_token.scopes:
         raise PermissionError("Hotel booking requires the travel:book scope.")
 
-    return {
-        "confirmation": "DEMO-HOTEL-001",
-        "city": city,
-        "nights": nights,
-        "hotel_class": hotel_class,
-        "status": "confirmed (demo only)",
-    }
+    city = _validate_text("city", city, max_length=100)
+    if isinstance(nights, bool) or not isinstance(nights, int) or not 1 <= nights <= 30:
+        raise ValueError("nights must be an integer between 1 and 30.")
+    if not isinstance(hotel_class, str) or hotel_class not in HOTEL_CLASSES:
+        raise ValueError(
+            f"hotel_class must be one of: {', '.join(sorted(HOTEL_CLASSES))}."
+        )
+
+    def create_booking() -> dict[str, str | int]:
+        return {
+            "confirmation": "DEMO-HOTEL-001",
+            "city": city,
+            "nights": nights,
+            "hotel_class": hotel_class,
+            "status": "confirmed (demo only)",
+        }
+
+    return execute_idempotent(
+        "book_hotel",
+        idempotency_key,
+        {"city": city, "nights": nights, "hotel_class": hotel_class},
+        create_booking,
+    )
 
 
 # RESOURCES = KNOW

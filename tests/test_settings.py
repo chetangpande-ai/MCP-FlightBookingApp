@@ -16,7 +16,10 @@ def test_defaults_use_local_urls_and_database_path() -> None:
     assert config.policy_http_url == "http://127.0.0.1:8002/mcp"
     assert config.work_http_url == "http://127.0.0.1:8003/mcp"
     assert config.database_path == PROJECT_ROOT / "data" / "business_trip.sqlite3"
+    assert config.policy_search_mode == "tfidf"
+    assert config.policy_cache_path == PROJECT_ROOT / "data" / "policy_vectors.json"
     assert config.token_secret == "LOCAL_DEV_JWT_SECRET_FOR_DEMO_32_BYTES"
+    assert config.approval_ttl_minutes == 5
 
 
 def test_environment_overrides_ports_urls_model_and_path() -> None:
@@ -62,3 +65,27 @@ def test_absolute_database_path_is_preserved(tmp_path: Path) -> None:
     config = Settings.from_env({"DATABASE_PATH": str(tmp_path / "copilot.sqlite3")})
 
     assert config.database_path == tmp_path / "copilot.sqlite3"
+
+
+def test_policy_search_mode_and_cache_path_can_be_configured(tmp_path: Path) -> None:
+    config = Settings.from_env(
+        {
+            "POLICY_SEARCH_MODE": "offline",
+            "POLICY_CACHE_PATH": str(tmp_path / "policy-index.json"),
+        }
+    )
+
+    assert config.policy_search_mode == "offline"
+    assert config.policy_cache_path == tmp_path / "policy-index.json"
+
+
+@pytest.mark.parametrize("value", ["", "openai", "keyword"])
+def test_invalid_policy_search_mode_is_rejected(value: str) -> None:
+    with pytest.raises(ValueError, match="POLICY_SEARCH_MODE"):
+        Settings.from_env({"POLICY_SEARCH_MODE": value})
+
+
+@pytest.mark.parametrize("value", ["0", "61", "not-an-integer"])
+def test_invalid_approval_ttl_is_rejected(value: str) -> None:
+    with pytest.raises(ValueError, match="APPROVAL_TTL_MINUTES"):
+        Settings.from_env({"APPROVAL_TTL_MINUTES": value})

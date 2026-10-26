@@ -13,7 +13,7 @@ This is a hands-on learning project for the Model Context Protocol (MCP). It con
 | Resource template | `city://{city}/guide` | Returns short business-travel tips for the requested city. |
 | Prompt | `plan_business_trip` | Returns numbered instructions for planning a trip without autonomously confirming a hotel booking. |
 | Work tools | `create_trip_task`, `list_trip_tasks` | Create and list in-memory preparation tasks. A real service could use Jira or GitHub Issues. |
-| Policy tool | `search_company_policy` | Ranks four demo policy documents using local TF-IDF vectors and cosine similarity. |
+| Policy tool | `search_company_policy` | Returns short, cited chunks from four demo policy documents, ranked with local TF-IDF or offline keyword matching. |
 | Policy resource | `policy://travel-summary` | Returns a fixed summary of the demo travel policies. |
 
 The three STDIO servers are in [`servers/`](servers/). The main host is [`app.py`](app.py). It reads resources and prompts explicitly, discovers tools from each server, prefixes their names, and adds selected tool calls to the LangChain agent. The Stage 1 client check is in [`tests/check_travel_server.py`](tests/check_travel_server.py).
@@ -36,7 +36,7 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Set your `GROQ_API_KEY` value in `.env`. The policy server builds and caches its local demo-document vectors on the first search. No embedding API call is made.
+Set your `GROQ_API_KEY` value in `.env`. The policy server builds its local demo-document TF-IDF index on the first search and persists it in `data/policy_vectors.json`. No embedding API call is made. Set `POLICY_SEARCH_MODE=offline` to use keyword matching without creating or reading that cache.
 
 ## Run the MCP Checks
 
@@ -46,7 +46,7 @@ The Stage 1 check launches the travel server over STDIO and exercises its tools,
 python tests\check_travel_server.py
 ```
 
-The client starts the server process, so no separate terminal is needed. The weather tool needs internet access. The check calls the demo hotel tool directly; it does not make a real booking.
+The client starts the server process, so no separate terminal is needed. The weather tool needs internet access. The check exercises non-booking tools and resources; approval tests verify that a booking call without the approved scope is denied. No real booking is made.
 
 The work server can be exercised by running a small client script in PowerShell:
 
@@ -70,7 +70,7 @@ asyncio.run(main())
 '@ | python -
 ```
 
-The policy server exposes its summary resource without an API call. Policy search uses local TF-IDF vectorization and does not require an API key; the main agent invokes this search when it plans a trip.
+The policy server exposes its summary resource without an API call. Policy search uses local TF-IDF vectorization by default and does not require an API key; the main agent invokes this search when it plans a trip.
 
 ## Run the Copilot
 
@@ -80,7 +80,7 @@ From the project root, run:
 python app.py
 ```
 
-Press Enter to accept the defaults: Dubai, five days, and Bangalore. The host starts all three MCP servers over STDIO. It prints discovered tool names, then runs the agent. The `travel_book_hotel` tool is deliberately withheld from the agent. After the plan is printed, the host asks `Approve booking? (yes/no)`. Only `yes` calls the demo booking tool through a new travel-server client.
+Press Enter to accept the defaults: Dubai, five days, and Bangalore. The host starts all three MCP servers over STDIO. It prints discovered tool names, then runs the agent. The `travel_book_hotel` tool is deliberately withheld from the agent. After the plan is printed, the host checks the entered hotel rate against policy, records a pending approval with an expiry, and asks for a yes/no decision. Only an unexpired approval can issue a short-lived `travel:book` token and call the demo booking tool.
 
 The model defaults to `openai/gpt-oss-20b`, hosted by Groq. Set `GROQ_MODEL` in `.env` to select another model available to your Groq account. If Groq rejects the model, the app prints a concise API error and recommends checking the configured model. The app does not set a reasoning-effort option.
 
@@ -155,7 +155,7 @@ The current code is a learning demo. It uses sample flights, sample work tasks, 
 | Flight search | Returns two fixed examples. | Connect to an approved travel inventory API and show its update time and currency. |
 | Hotel booking | Returns a fixed demo confirmation. | Integrate a booking provider, add authorization and idempotency, and retain an explicit approval step. |
 | Work tasks | Stored in process memory and reset on restart. | Connect to Jira or GitHub Issues and apply user identity and project permissions. |
-| Policy retrieval | Four demo documents are vectorized locally with TF-IDF and cached in process memory. | Use semantic embeddings and a managed vector database for larger corpora and improved semantic matching. |
+| Policy retrieval | Four demo documents are ranked locally with TF-IDF or keyword matching; TF-IDF vectors are stored in a content-hash-validated local JSON cache. | Generate semantic embeddings and store vectors plus metadata in a vector database for larger corpora and improved semantic matching. |
 | MCP-to-LangChain tools | `app.py` wraps tools discovered through native MCP 2.x clients. | Revisit the adapter when it supports MCP 2.x. The available `langchain-mcp-adapters` release currently requires `mcp<2.0`, which conflicts with this project's `mcp[cli]>=2.0` requirement. |
 | HTTP transport | Local server binds to `127.0.0.1` without authentication. | Add authentication, TLS, network controls, observability, and deployment configuration before remote use. |
 | Secrets | `.env` is ignored by Git; `.env.example` is safe to commit. | Use a managed secret store for deployed environments and rotate keys through a documented process. |
@@ -167,7 +167,7 @@ The current code is a learning demo. It uses sample flights, sample work tasks, 
 - **Prompts** provide reusable instructions with named arguments.
 - **STDIO** lets a client start a local server process; **Streamable HTTP** connects to a running server URL.
 - A **multi-server host** can discover tools from separate servers and prefix names to avoid collisions.
-- **RAG as a tool** vectorizes the query locally, ranks documents by cosine similarity, and returns policy evidence to the agent.
+- **RAG as a tool** vectorizes the query locally, ranks documents by cosine similarity, and returns cited policy evidence to the agent.
 - **Human approval** keeps a side-effecting booking action outside autonomous agent tool selection.
 - Reading resources and prompts does not send them to the model automatically; the host explicitly adds their content to the system prompt.
 
@@ -213,3 +213,53 @@ laptop demo or expose the HTTP server beyond loopback.
 Authentication tests, including missing/bad/expired tokens, wrong audience,
 missing scope, a valid token, and booking scope enforcement, run with
 `python -m pytest`.
+
+## Tool validation and idempotency (Stage 3)
+
+Travel, work, and policy tools validate their inputs and cap returned collections.
+`book_hotel` and `create_trip_task` require an `idempotency_key`; SQLite stores the
+result for retries. Reusing a key with different parameters is rejected. The
+database is created locally at `DATABASE_PATH` (default
+`data/business_trip.sqlite3`); no external database is needed.
+
+The weather lookup uses the configured timeout, retries transient failures up to
+three times with exponential backoff, and returns `ok`, `error`, and `retryable`
+fields on failure. The response body is size-capped. Run all validation and
+idempotency tests with `python -m pytest -q`.
+
+## Human booking approval (Stage 4)
+
+The host checks the requested hotel nightly rate against the local policy limit
+(INR 12,000) before writing a pending action. A valid request is persisted in
+SQLite and expires after `APPROVAL_TTL_MINUTES` (default 5). The CLI displays the
+expiry and asks for a human yes/no decision. Only an unexpired approval issues a
+short-lived local `travel:book` JWT and invokes `book_hotel`; the tool stays out
+of the agent's tool list. Approval decisions and booking outcomes are written to
+the local `audit_records` table.
+
+The workflow is laptop-only and uses dummy data. Approval/authentication tokens,
+SQLite audit data, and the CLI are not substitutes for production identity,
+separation of duties, or tamper-resistant audit storage. Run approval workflow
+tests with `python -m pytest -q tests\test_approval_service.py`.
+
+## Offline policy retrieval (Stage 5)
+
+Policy retrieval is local and needs no OpenAI key or network connection. Set
+`POLICY_SEARCH_MODE=tfidf` (the default) to use cosine similarity over locally
+computed TF-IDF vectors. The first search writes the index to
+`POLICY_CACHE_PATH` (default `data/policy_vectors.json`); subsequent searches
+load the cached vectors. A SHA-256 hash of the policy IDs and content invalidates
+the index automatically when any document changes. This generated cache is
+ignored by Git.
+
+Set `POLICY_SEARCH_MODE=offline` to use lightweight keyword-overlap ranking;
+this mode does not read or write the vector cache. Both modes return bounded
+chunks with stable `document_id` citations, titles, and relevance scores. Run
+`python -m pytest -q` for cache reuse/invalidation, offline-mode, citation, and
+input-bound tests.
+
+In production, a larger and frequently updated policy corpus would typically
+use model-generated embeddings plus a vector database containing vectors,
+document IDs, policy versions, and access-control metadata. The local TF-IDF
+index is a deterministic laptop-scale substitute, not a production vector
+database or semantic embedding model.

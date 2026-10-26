@@ -25,10 +25,6 @@ async def main() -> None:
         print("get_live_weather:", await client.call_tool(
             "get_live_weather", {"city": "Dubai"}
         ))
-        print("book_hotel:", await client.call_tool(
-            "book_hotel", {"city": "Dubai", "nights": 4}
-        ))
-
         print("RESOURCES")
         print("available:", await client.list_resources())
         print("preferences:", await client.read_resource("travel://preferences"))

@@ -16,7 +16,9 @@ from mcp import Client, StdioServerParameters
 from mcp.types import TextContent, TextResourceContents
 from pydantic import Field, create_model
 
+from approval_service import decide_hotel_booking, request_hotel_booking
 from logging_setup import configure_logging
+from servers.policy_server import get_hotel_nightly_limit_inr
 from settings import settings
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -221,15 +223,33 @@ Rules:
         final_answer = print_message_flow(result["messages"])
         print("\nFINAL ANSWER\n" + (final_answer or "See the message flow above."))
 
-    approval = input("\nApprove booking? (yes/no): ").strip().lower()
-    if approval == "yes":
-        async with Client(server_parameters(SERVER_FILES["travel"])) as travel_client:
-            booking_result = await travel_client.call_tool(
-                "book_hotel", {"city": destination, "nights": days}
-            )
-        print("Booking result:", booking_result.structured_content or booking_result.content)
-    else:
-        print("Booking not made.")
+    hotel_rate_text = (
+        input(
+            f"\nHotel nightly rate in INR [{get_hotel_nightly_limit_inr()}]: "
+        ).strip()
+        or str(get_hotel_nightly_limit_inr())
+    )
+    try:
+        hotel_rate_inr = int(hotel_rate_text)
+        pending_action = request_hotel_booking(
+            destination,
+            days,
+            hotel_rate_inr,
+        )
+    except ValueError as error:
+        print(f"Booking request rejected: {error}")
+        return
+
+    print(
+        f"Pending action {pending_action['id']} expires at "
+        f"{pending_action['expires_at']}."
+    )
+    approval = input("Approve this hotel booking? (yes/no): ").strip().lower()
+    decision = await decide_hotel_booking(
+        pending_action["id"],
+        approved=approval == "yes",
+    )
+    print("Booking workflow result:", decision)
 
 
 def main() -> None:
