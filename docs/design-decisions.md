@@ -39,3 +39,51 @@
 - **Trade-off:** TF-IDF and keyword matching are inexpensive and deterministic, but do not understand semantic similarity as well as embedding models; the local JSON index is intended only for this small demo corpus.
 - **Interview question:** How would you make policy retrieval citable, repeatable, and available offline, and what changes when the corpus grows?
 - **Production would add:** Generate embeddings with a selected model, store vectors and metadata in a vector database, filter by tenant and policy version, and evaluate retrieval quality and freshness.
+
+## Stage 6 — Observability and audit
+
+- **Built:** Tool wrappers write one JSON-line event per invocation with UTC timestamp, generated request ID, caller subject when authenticated, tool name, SHA-256 hash of canonical arguments, outcome, and elapsed time. A bounded in-process metric snapshot exposes call/error counts and p50/p95 latency; the travel HTTP server exposes `/health` and `/metrics`.
+- **Why:** Operators need enough evidence to diagnose reliability and latency without placing potentially sensitive tool arguments in logs.
+- **Trade-off:** Metrics and health are process-local and the audit log is a local append-only file, not a centralized or tamper-proof telemetry system. The authenticated travel server is the only HTTP wrapper currently present.
+- **Interview question:** What telemetry helps locate slow or failing tool calls while minimizing sensitive data collection?
+- **Production would add:** Distributed tracing with propagated request IDs, a metrics backend, centralized structured logs, retention/access controls, audit integrity protection, and authenticated health/metrics surfaces.
+
+## Stage 7 — Local scaling simulation
+
+- **Built:** A bounded localhost cluster launcher starts one to eight travel server processes. An ASGI gateway validates its audience-specific read token, applies a per-subject token bucket, health-checks backends, round-robins requests, and mints a fresh least-privilege downstream token. The load script reports request success, latency percentiles, and per-instance traffic.
+- **Why:** Multiple processes demonstrate load distribution and instance failure handling without cloud infrastructure or container tooling.
+- **Trade-off:** Health checks run locally per request, rate-limit state and counts live only in one gateway process, and SQLite/idempotency are not a distributed production store. The gateway forwards MCP protocol headers/body but is intentionally a small single-host proxy.
+- **Interview question:** How do you distribute traffic, enforce per-client limits, and preserve authorization when one service has multiple instances?
+- **Production would add:** Managed load balancing, service discovery, persistent distributed rate limits, shared idempotency, circuit breakers, TLS, autoscaling, and protocol-level integration tests for sessionful streaming.
+
+## Stage 8 — Prompt-injection checks
+
+- **Built:** Resource, prompt, and tool-result text is escaped and wrapped as untrusted context; the system prompt says those delimited strings are evidence, not instructions. The agent's exposed tool list excludes hotel booking, and tests include a malicious policy document.
+- **Why:** Retrieved content and tool outputs may contain instruction-like text and should not be trusted as control-plane instructions.
+- **Trade-off:** Delimiters and escaping reduce ambiguity but cannot guarantee model compliance; authorization on the booking function remains the actual security boundary.
+- **Interview question:** How do you keep retrieved documents from changing agent behavior, and how should high-impact tools be protected if the model is manipulated?
+- **Production would add:** Content classification, policy-engine checks at the tool boundary, adversarial evaluations, human approval, scoped credentials, and model/provider-specific defense-in-depth.
+
+## Stage 9 — One-command verification
+
+- **Built:** `scripts/check_all.py` runs preflight, pytest, the existing STDIO smoke check, and a short-lived authenticated HTTP-server/client smoke test. The live Groq call is separately opt-in.
+- **Why:** A repeatable local check catches regressions across transport, authentication, and tool behavior before a demo or interview.
+- **Trade-off:** External weather may be unavailable, and the optional LLM smoke can use quota; deterministic pytest and local HTTP/STDIO checks remain the default.
+- **Interview question:** How do you build a fast, deterministic verification pipeline that still exercises important service boundaries?
+- **Production would add:** Isolated CI environments, dependency/security scans, parallelized contract tests, deployment smoke tests, and redacted test telemetry.
+
+## Stage 10 — Docker Compose (not implemented)
+
+- **Built:** This optional stage was not enabled because Docker was not installed in the Stage 0 laptop preflight. No Dockerfile or Compose services were generated.
+- **Why:** The project requirement made containerization conditional on a working local Docker installation and explicit approval.
+- **Trade-off:** The process-based Stage 7 simulation covers local scaling without the extra memory use and setup of a container runtime.
+- **Interview question:** When does containerization add value over running local processes, and how do resource limits affect the choice?
+- **Production would add:** A tested container build, health-checked Compose/deployment manifests, image scanning, resource requests/limits, and secrets injection. Recheck Docker and request approval before this optional stage.
+
+## Stage 11 — System design documentation
+
+- **Built:** The README now includes a current local architecture diagram, stage run commands, local-vs-production boundaries, and a production-gaps comparison table.
+- **Why:** Explicit trade-offs make the demo easier to explain and prevent a laptop simulation from being mistaken for a production-ready service.
+- **Trade-off:** Documentation reflects a single-machine, dummy-data implementation and must evolve with code or deployment changes.
+- **Interview question:** How do you communicate an architecture's guarantees, bottlenecks, and migration path without overstating what a prototype proves?
+- **Production would add:** Versioned architecture decision records, operational runbooks, service-level objectives, threat models, capacity estimates, and diagrams tied to deployed infrastructure.

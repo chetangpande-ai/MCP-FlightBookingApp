@@ -9,6 +9,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from servers.idempotency import execute_idempotent
 from mcp.server import MCPServer
+from observability import observe_tool
 
 
 MAX_TASK_TITLE_LENGTH = 200
@@ -45,6 +46,7 @@ def _validate_text(name: str, value: str, max_length: int) -> str:
 
 
 @server.tool()
+@observe_tool
 def create_trip_task(
     title: str,
     idempotency_key: str,
@@ -74,6 +76,7 @@ def create_trip_task(
 
 
 @server.tool()
+@observe_tool
 def list_trip_tasks() -> list[dict[str, str]]:
     """Return the current demo trip tasks."""
     return trip_tasks[-MAX_TASKS_RETURNED:]

@@ -84,6 +84,20 @@ def test_http_rejects_missing_token(http_client: TestClient) -> None:
     assert _initialize(http_client).status_code == 401
 
 
+def test_http_health_and_metrics_routes_are_available(http_client: TestClient) -> None:
+    health = http_client.get("/health")
+    metrics = http_client.get("/metrics")
+
+    assert health.status_code == 200
+    assert health.json() == {
+        "status": "ok",
+        "service": "travel",
+        "instance": "travel",
+    }
+    assert metrics.status_code == 200
+    assert "p95_latency_ms" in metrics.json()
+
+
 def test_http_rejects_bad_token(http_client: TestClient) -> None:
     assert _initialize(http_client, "not-a-jwt").status_code == 401
 

@@ -9,6 +9,7 @@ __pycache__/
 *.py[cod]
 data/*.sqlite3
 data/policy_vectors.json
+data/tool_audit.jsonl
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

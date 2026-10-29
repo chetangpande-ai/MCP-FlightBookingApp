@@ -16,7 +16,7 @@ This is a hands-on learning project for the Model Context Protocol (MCP). It con
 | Policy tool | `search_company_policy` | Returns short, cited chunks from four demo policy documents, ranked with local TF-IDF or offline keyword matching. |
 | Policy resource | `policy://travel-summary` | Returns a fixed summary of the demo travel policies. |
 
-The three STDIO servers are in [`servers/`](servers/). The main host is [`app.py`](app.py). It reads resources and prompts explicitly, discovers tools from each server, prefixes their names, and adds selected tool calls to the LangChain agent. The Stage 1 client check is in [`tests/check_travel_server.py`](tests/check_travel_server.py).
+The three STDIO servers are in [`servers/`](servers/). The main host is [`app.py`](app.py). It reads resources and prompts explicitly, discovers tools from each server, prefixes their names, and adds selected tool calls to the LangChain agent. The travel server is also exposed through [`http-servers/travel_http_server.py`](http-servers/travel_http_server.py), and the local scaling simulator is in [`gateway.py`](gateway.py) and [`scripts/run_cluster.py`](scripts/run_cluster.py). The STDIO client check is in [`tests/check_travel_server.py`](tests/check_travel_server.py).
 
 ## Requirements
 
@@ -156,8 +156,11 @@ The current code is a learning demo. It uses sample flights, sample work tasks, 
 | Hotel booking | Returns a fixed demo confirmation. | Integrate a booking provider, add authorization and idempotency, and retain an explicit approval step. |
 | Work tasks | Stored in process memory and reset on restart. | Connect to Jira or GitHub Issues and apply user identity and project permissions. |
 | Policy retrieval | Four demo documents are ranked locally with TF-IDF or keyword matching; TF-IDF vectors are stored in a content-hash-validated local JSON cache. | Generate semantic embeddings and store vectors plus metadata in a vector database for larger corpora and improved semantic matching. |
+| Observability | JSONL audit events contain tool, caller, request ID, argument hash, status, and latency; process-local metrics are exposed for the travel HTTP server. | Centralized, access-controlled logs and metrics with distributed traces, retention, and tamper-resistant audit policies. |
+| Local scaling | One localhost gateway round-robins across a small set of travel processes and mints a new least-privilege token per backend. | Load balancing, service discovery, distributed rate limiting, autoscaling, and shared state across multiple hosts. |
+| Prompt injection | MCP-sourced text is escaped and delimited as untrusted context; the booking tool is excluded from agent tools. | Model-specific defense-in-depth, content classification, policy enforcement, and adversarial evaluation against evolving attacks. |
 | MCP-to-LangChain tools | `app.py` wraps tools discovered through native MCP 2.x clients. | Revisit the adapter when it supports MCP 2.x. The available `langchain-mcp-adapters` release currently requires `mcp<2.0`, which conflicts with this project's `mcp[cli]>=2.0` requirement. |
-| HTTP transport | Local server binds to `127.0.0.1` without authentication. | Add authentication, TLS, network controls, observability, and deployment configuration before remote use. |
+| HTTP transport | Travel endpoint uses audience- and scope-checked JWTs on loopback; local health/metrics routes are public. | Add TLS, network controls, authenticated operational endpoints, and deployment-managed identity before remote use. |
 | Secrets | `.env` is ignored by Git; `.env.example` is safe to commit. | Use a managed secret store for deployed environments and rotate keys through a documented process. |
 
 ## What I Learned
@@ -263,3 +266,124 @@ use model-generated embeddings plus a vector database containing vectors,
 document IDs, policy versions, and access-control metadata. The local TF-IDF
 index is a deterministic laptop-scale substitute, not a production vector
 database or semantic embedding model.
+
+## Observability and audit (Stage 6)
+
+Travel, policy, and work tools emit one JSONL audit event per invocation to
+`AUDIT_LOG_PATH` (default `data/tool_audit.jsonl`). Each event records a timestamp,
+request ID, caller subject where available, tool name, SHA-256 hash of arguments,
+status, and latency; raw argument values are not written. The file and metrics
+are local demo data and are ignored by Git. The travel HTTP server exposes
+unauthenticated local `/health` and `/metrics` routes for readiness and in-process
+call/error/p50/p95 counters. With the travel server running, inspect the counters:
+
+```powershell
+python scripts\show_metrics.py
+```
+
+Optional LangSmith tracing is disabled by default. Set `LANGSMITH_TRACING=true`
+and configure the LangSmith credentials in your local `.env` only if you
+intentionally want telemetry sent to that external service.
+
+## Local scaling simulation (Stage 7)
+
+The round-robin gateway and all instances bind only to `MCP_HOST` (default
+`127.0.0.1`). Configure `CLUSTER_BASE_PORT`, `CLUSTER_SIZE` (1-8), `GATEWAY_PORT`,
+and the `GATEWAY_RATE_*` settings in `.env`. Defaults are three small travel
+processes, 100 burst tokens, and 50 tokens/second. Backend health checks time
+out after `GATEWAY_HEALTH_TIMEOUT_SECONDS` (default 0.5 seconds). Start the
+cluster together:
+
+```powershell
+python scripts\run_cluster.py
+```
+
+In another terminal, issue a gateway-audience read token and run the default
+50-request/10-concurrent load test:
+
+```powershell
+python scripts\load_test.py
+```
+
+The load test creates its own short-lived local read token for convenience;
+use `scripts\issue_token.py --server-url http://127.0.0.1:8000/mcp` when testing
+with another client. It reports success,
+p50/p95 latency, and requests per instance. To test failover, stop one printed
+travel-server PID from another PowerShell window using
+`Stop-Process -Id <that-PID>`; new requests should continue through the remaining
+healthy instances. Stop the cluster with Ctrl+C in its original terminal. The
+gateway validates the client JWT for its own audience, rate-limits by subject,
+and mints a new short-lived `travel:read` JWT for the selected server. It never
+forwards the caller's bearer token and cannot grant `travel:book`. This is a
+single-machine simulation, not a production load balancer.
+
+## Prompt-injection checks (Stage 8)
+
+Resources, prompts, and MCP tool results are escaped and wrapped in
+`<untrusted_context>` delimiters. The system prompt explicitly treats this text
+as reference data, not instructions. The booking tool remains absent from the
+agent's tool list and the approval workflow remains the only supported booking
+path. Deterministic malicious-document and tool-exclusion checks run with:
+
+```powershell
+python -m pytest -q tests\test_prompt_injection.py
+```
+
+The tests do not claim that delimiters alone solve prompt injection; the
+non-agent booking authorization check is an independent enforcement boundary.
+
+## One-command local verification (Stage 9)
+
+Run the preflight report, full tests, STDIO smoke check, and an authenticated
+HTTP app smoke check with:
+
+```powershell
+python scripts\check_all.py
+```
+
+The interactive Groq-backed agent is not called by default, even if a key is
+configured. To explicitly opt into a live model request (which may use API
+quota), run `python scripts\check_all.py --include-llm`. Stage 0 prerequisites
+are reported by `python scripts\preflight.py`.
+
+## Docker Compose (Stage 10: not enabled)
+
+This stage is optional and requires Docker to be installed and running, followed
+by explicit approval to proceed. Docker was not available in the Stage 0 laptop
+preflight, so no Dockerfile or Compose stack was added. All stages completed
+here run locally without Docker.
+
+## Complete local architecture and production gaps (Stage 11)
+
+```mermaid
+flowchart LR
+    User[Traveler] --> Host[Local LangChain host]
+    Host -->|STDIO| Travel[Travel MCP server]
+    Host -->|STDIO| Policy[Policy MCP server]
+    Host -->|STDIO| Work[Work MCP server]
+    HttpClient[HTTP MCP client] -->|gateway-audience JWT| Gateway[Local auth and rate-limit gateway]
+    Gateway -->|fresh travel-read JWT| T1[Travel instance 1]
+    Gateway -->|fresh travel-read JWT| T2[Travel instance 2]
+    Gateway -->|health-aware round robin| T3[Travel instance N]
+    Travel --> Tools[Flights, weather, demo booking]
+    Policy --> Search[Local TF-IDF or keyword search]
+    Work --> Tasks[Local demo trip tasks]
+    Tools --> Audit[JSONL audit and local metrics]
+    Search --> Audit
+    Tasks --> Audit
+    Host --> Approval[SQLite approval workflow]
+    Approval -->|short-lived travel:book credential| Tools
+```
+
+| Local learning implementation | Production approach |
+| --- | --- |
+| Loopback JWT secret and local issuer | Managed identity provider, asymmetric signing keys, rotation, and per-user authorization |
+| SQLite idempotency and approval records | Shared transactional database, outbox/retry strategy, and multi-approver workflow |
+| Local TF-IDF cache and keyword mode | Versioned embeddings, vector database, access filters, and retrieval evaluation |
+| Local JSONL events and in-process counters | Centralized observability, trace propagation, protected audit retention, and alerting |
+| Three local processes and a Python gateway | Highly available load balancer, service discovery, autoscaling, distributed rate limits, and shared state |
+| Escaped context boundaries and hidden booking tool | Layered prompt-injection defenses, policy checks, and continuous adversarial testing |
+| Demo data and localhost-only HTTP | Real provider integrations, TLS, secrets management, privacy/compliance controls, and disaster recovery |
+
+Stage 11 closes the learning sequence; it documents how to explain the system
+and its trade-offs rather than adding another runtime dependency.

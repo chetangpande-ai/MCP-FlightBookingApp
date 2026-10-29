@@ -1,6 +1,7 @@
 """MCP server with demo travel tools and reference information."""
 
 import json
+import os
 import socket
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from auth.tokens import LocalJWTVerifier
+from observability import metrics_snapshot, observe_tool
 from mcp.server import MCPServer
 from mcp.server.auth.settings import AuthSettings
 from servers.idempotency import execute_idempotent
@@ -43,6 +45,27 @@ server = MCPServer(
         validate_token_resource=True,
     ),
 )
+
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+
+@server.custom_route("/health", methods=["GET"], include_in_schema=False)
+async def health_check(request: Request) -> JSONResponse:
+    """Expose a minimal local readiness response for this MCP server."""
+    return JSONResponse(
+        {
+            "status": "ok",
+            "service": "travel",
+            "instance": os.getenv("TRAVEL_INSTANCE_ID", "travel"),
+        }
+    )
+
+
+@server.custom_route("/metrics", methods=["GET"], include_in_schema=False)
+async def metrics_endpoint(request: Request) -> JSONResponse:
+    """Expose local process counters for learning and smoke checks."""
+    return JSONResponse(metrics_snapshot())
 
 
 def _validate_text(name: str, value: str, *, max_length: int = MAX_TEXT_LENGTH) -> str:
@@ -100,6 +123,7 @@ def _get_weather_json(url: str) -> dict:
 
 # TOOLS = DO
 @server.tool()
+@observe_tool
 def search_flights(origin: str, destination: str) -> list[dict[str, str | int]]:
     """Return two sample flights for the requested route."""
     origin = _validate_text("origin", origin, max_length=100)
@@ -121,6 +145,7 @@ def search_flights(origin: str, destination: str) -> list[dict[str, str | int]]:
 
 
 @server.tool()
+@observe_tool
 def get_live_weather(
     city: str,
 ) -> dict[str, str | float | int | bool]:
@@ -188,6 +213,7 @@ def get_live_weather(
 
 
 @server.tool()
+@observe_tool
 def book_hotel(
     city: str,
     nights: int,

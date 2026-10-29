@@ -48,6 +48,22 @@ def _bounded_int(
     return value
 
 
+def _bounded_float(
+    env: Mapping[str, str],
+    name: str,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        value = float(env.get(name, str(default)))
+    except ValueError as error:
+        raise ValueError(f"{name} must be a number.") from error
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}.")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     """Resolved settings, with environment variables overriding local defaults."""
@@ -57,6 +73,14 @@ class Settings:
     policy_http_port: int
     work_http_port: int
     gateway_port: int
+    gateway_url: str
+    cluster_base_port: int
+    cluster_size: int
+    gateway_rate_capacity: int
+    gateway_rate_refill_per_second: float
+    gateway_health_timeout_seconds: float
+    load_test_requests: int
+    load_test_concurrency: int
     travel_http_url: str
     policy_http_url: str
     work_http_url: str
@@ -68,6 +92,8 @@ class Settings:
     approval_ttl_minutes: int
     policy_search_mode: str
     policy_cache_path: Path
+    audit_log_path: Path
+    langsmith_tracing: bool
     database_path: Path
     log_level: str
 
@@ -79,6 +105,9 @@ class Settings:
         policy_port = _port(values, "POLICY_HTTP_PORT", 8002)
         work_port = _port(values, "WORK_HTTP_PORT", 8003)
         gateway_port = _port(values, "GATEWAY_PORT", 8000)
+        cluster_base_port = _port(
+            values, "CLUSTER_BASE_PORT", travel_port
+        )
         database_path = Path(
             values.get("DATABASE_PATH", "data/business_trip.sqlite3")
         ).expanduser()
@@ -89,9 +118,28 @@ class Settings:
         ).expanduser()
         if not policy_cache_path.is_absolute():
             policy_cache_path = PROJECT_ROOT / policy_cache_path
+        audit_log_path = Path(
+            values.get("AUDIT_LOG_PATH", "data/tool_audit.jsonl")
+        ).expanduser()
+        if not audit_log_path.is_absolute():
+            audit_log_path = PROJECT_ROOT / audit_log_path
         policy_search_mode = values.get("POLICY_SEARCH_MODE", "tfidf").strip().lower()
         if policy_search_mode not in {"tfidf", "offline"}:
             raise ValueError("POLICY_SEARCH_MODE must be 'tfidf' or 'offline'.")
+        cluster_size = _bounded_int(values, "CLUSTER_SIZE", 3, 1, 8)
+        if cluster_base_port + cluster_size - 1 > 65535:
+            raise ValueError("CLUSTER_BASE_PORT and CLUSTER_SIZE exceed port 65535.")
+        cluster_ports = {
+            cluster_base_port + index for index in range(cluster_size)
+        }
+        if gateway_port in cluster_ports:
+            raise ValueError(
+                "GATEWAY_PORT overlaps a travel cluster port: "
+                + str(gateway_port)
+            )
+        tracing_value = values.get("LANGSMITH_TRACING", "false").strip().lower()
+        if tracing_value not in {"true", "false", "1", "0", "yes", "no"}:
+            raise ValueError("LANGSMITH_TRACING must be a boolean value.")
 
         return cls(
             http_host=host,
@@ -99,6 +147,26 @@ class Settings:
             policy_http_port=policy_port,
             work_http_port=work_port,
             gateway_port=gateway_port,
+            gateway_url=values.get(
+                "GATEWAY_URL", f"http://{host}:{gateway_port}/mcp"
+            ),
+            cluster_base_port=cluster_base_port,
+            cluster_size=cluster_size,
+            gateway_rate_capacity=_bounded_int(
+                values, "GATEWAY_RATE_CAPACITY", 100, 1, 10_000
+            ),
+            gateway_rate_refill_per_second=_bounded_float(
+                values, "GATEWAY_RATE_REFILL_PER_SECOND", 50.0, 0.1, 10_000.0
+            ),
+            gateway_health_timeout_seconds=_bounded_float(
+                values, "GATEWAY_HEALTH_TIMEOUT_SECONDS", 0.5, 0.1, 5.0
+            ),
+            load_test_requests=_bounded_int(
+                values, "LOAD_TEST_REQUESTS", 50, 1, 5_000
+            ),
+            load_test_concurrency=_bounded_int(
+                values, "LOAD_TEST_CONCURRENCY", 10, 1, 100
+            ),
             travel_http_url=values.get(
                 "TRAVEL_HTTP_URL", f"http://{host}:{travel_port}/mcp"
             ),
@@ -125,6 +193,8 @@ class Settings:
             ),
             policy_search_mode=policy_search_mode,
             policy_cache_path=policy_cache_path,
+            audit_log_path=audit_log_path,
+            langsmith_tracing=tracing_value in {"true", "1", "yes"},
             database_path=database_path,
             log_level=values.get("LOG_LEVEL", "INFO").upper(),
         )

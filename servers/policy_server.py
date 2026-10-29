@@ -13,6 +13,7 @@ from typing import Any
 
 from mcp.server import MCPServer
 
+from observability import observe_tool
 from settings import settings
 
 
@@ -344,6 +345,7 @@ def search_policy_documents(
 
 # TOOLS = DO
 @server.tool()
+@observe_tool
 def search_company_policy(query: str, top_k: int = 2) -> list[dict[str, str | float]]:
     """Return short cited policy chunks ranked by local relevance."""
     return search_policy_documents(query, top_k)

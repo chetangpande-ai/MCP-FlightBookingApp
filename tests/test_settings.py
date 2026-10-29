@@ -15,9 +15,18 @@ def test_defaults_use_local_urls_and_database_path() -> None:
     assert config.travel_http_url == "http://127.0.0.1:8001/mcp"
     assert config.policy_http_url == "http://127.0.0.1:8002/mcp"
     assert config.work_http_url == "http://127.0.0.1:8003/mcp"
+    assert config.gateway_url == "http://127.0.0.1:8000/mcp"
+    assert config.cluster_base_port == 8001
+    assert config.cluster_size == 3
+    assert config.gateway_rate_capacity == 100
+    assert config.gateway_health_timeout_seconds == 0.5
+    assert config.load_test_requests == 50
+    assert config.load_test_concurrency == 10
     assert config.database_path == PROJECT_ROOT / "data" / "business_trip.sqlite3"
     assert config.policy_search_mode == "tfidf"
     assert config.policy_cache_path == PROJECT_ROOT / "data" / "policy_vectors.json"
+    assert config.audit_log_path == PROJECT_ROOT / "data" / "tool_audit.jsonl"
+    assert config.langsmith_tracing is False
     assert config.token_secret == "LOCAL_DEV_JWT_SECRET_FOR_DEMO_32_BYTES"
     assert config.approval_ttl_minutes == 5
 
@@ -77,6 +86,33 @@ def test_policy_search_mode_and_cache_path_can_be_configured(tmp_path: Path) -> 
 
     assert config.policy_search_mode == "offline"
     assert config.policy_cache_path == tmp_path / "policy-index.json"
+
+
+def test_audit_path_and_langsmith_tracing_are_configurable(tmp_path: Path) -> None:
+    config = Settings.from_env(
+        {
+            "AUDIT_LOG_PATH": str(tmp_path / "audit.jsonl"),
+            "LANGSMITH_TRACING": "true",
+        }
+    )
+
+    assert config.audit_log_path == tmp_path / "audit.jsonl"
+    assert config.langsmith_tracing is True
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"CLUSTER_SIZE": "9"},
+        {"CLUSTER_BASE_PORT": "65535", "CLUSTER_SIZE": "2"},
+        {"GATEWAY_PORT": "8001"},
+    ],
+)
+def test_invalid_cluster_port_configuration_is_rejected(
+    values: dict[str, str],
+) -> None:
+    with pytest.raises(ValueError):
+        Settings.from_env(values)
 
 
 @pytest.mark.parametrize("value", ["", "openai", "keyword"])
